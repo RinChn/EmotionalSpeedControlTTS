@@ -1,6 +1,13 @@
 # EmotionalSpeedTTS
 ---
 
+This is the final qualification work (Bachelor’s thesis) by Morik A.I.,  
+student of group 1308 at Saint Petersburg Electrotechnical University "LETI".  
+Scientific advisor — Timofeev A.V..  
+2025.
+
+---
+
 EmotionalSpeedTTS is a Russian-language text-to-speech (TTS) system with support for emotion control, adjustable speaking rate, and speaker voice cloning. It is designed for applications such as adaptive educational systems, interactive learning content, and intelligent assistants.
 
 
