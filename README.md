@@ -11,9 +11,14 @@
 
 <div align="center">  
 This is the final qualification work (Bachelor’s thesis) by Morik A.I.,  
+  
 student of group 1308 at Saint Petersburg Electrotechnical University "LETI".  
+
 Scientific advisor — Timofeev A.V..  
-2025.
+
+2025 y.
+
+
 </div>
 
 ---
