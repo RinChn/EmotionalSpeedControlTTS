@@ -1,7 +1,7 @@
 <div align="center"> 
 
   
-  # EmotionalSpeedTTS
+  # EmotionalSpeedControlTTS (ESC)
 
   
 </div>
@@ -23,7 +23,7 @@ Scientific advisor — Timofeev A.V..
 
 ---
 
-EmotionalSpeedTTS is a Russian-language text-to-speech (TTS) system with support for emotion control, adjustable speaking rate, and speaker voice cloning. It is designed for applications such as adaptive educational systems, interactive learning content, and intelligent assistants.
+ESC is a Russian-language text-to-speech (TTS) system with support for emotion control, adjustable speaking rate, and speaker voice cloning. It is designed for applications such as adaptive educational systems, interactive learning content, and intelligent assistants.
 
 
 This project is based on a modified version of Tacotron 2 and integrates:
