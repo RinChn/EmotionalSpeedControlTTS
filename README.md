@@ -25,15 +25,23 @@ This project is based on a modified version of Tacotron 2 and integrates:
 
 
 ## Dependencies and Resources
+
+
+
 So-VITS-SVC (voice conversion) https://github.com/voicepaw/so-vits-svc-fork
+
 
 HiFi-GAN (neural vocoder) https://github.com/jik876/hifi-gan
 
+
 RESD (Russian Emotional Speech Dataset) https://www.kaggle.com/datasets/ar4ikov/resd-dataset
+
 
 Pretrained model storage https://disk.yandex.ru/d/Zlp0W7jzDPlFuQ
 
+
 Tacotron 2 (voice synthesis) https://github.com/NVIDIA/tacotron2
+
 
 
 ---
