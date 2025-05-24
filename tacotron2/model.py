@@ -174,12 +174,6 @@ class Encoder(nn.Module):
             x = F.dropout(F.relu(conv(x)), 0.5, self.training)
 
         x = x.transpose(1, 2)
-        # position = torch.arange(0, x.size(1), device=x.device).unsqueeze(0).unsqueeze(-1)
-        # position = position / 1000.0  # нормализуем
-        #
-        # x = x + position  # добавляем позицию
-
-        # pytorch tensor are not reversible, hence the conversion
         input_lengths = input_lengths.cpu().numpy()
         x = nn.utils.rnn.pack_padded_sequence(
             x, input_lengths, batch_first=True)
@@ -238,8 +232,6 @@ class Decoder(nn.Module):
             attention_location_n_filters=hparams.attention_location_n_filters,
             attention_location_kernel_size=hparams.attention_location_kernel_size
         )
-        # nn.init.xavier_uniform_(self.location_attention.v.weight, gain=0.1)
-        # nn.init.constant_(self.location_attention.v.bias, -1.0)  # или даже 0.0
 
         self.decoder_rnn = nn.LSTMCell(hparams.attention_rnn_dim + hparams.encoder_embedding_dim,
                                        hparams.decoder_rnn_dim)
@@ -262,7 +254,6 @@ class Decoder(nn.Module):
         self.decoder_hidden = memory.new_zeros(B, self.decoder_rnn.hidden_size)
         self.decoder_cell = memory.new_zeros(B, self.decoder_rnn.hidden_size)
 
-        # self.attention_weights = F.softmax(-torch.arange(MAX_TIME, device=memory.device).float(), dim=0).unsqueeze(0).expand(B, -1)
         self.attention_weights = memory.new_zeros(B, MAX_TIME)
         self.attention_weights[:, 0] = 1.0  # Начинаем с первого токена
         self.attention_weights[:, :3] = torch.tensor([0.5, 0.3, 0.2], device=memory.device).unsqueeze(0)
@@ -271,14 +262,12 @@ class Decoder(nn.Module):
         self.cumulative_attention_weights = memory.new_zeros(B, MAX_TIME)
         self.attention_weights = memory.new_zeros(B, MAX_TIME)
         if MAX_TIME > 1:
-            # Распределяем внимание по небольшой области в начале
             start = 0
             end = min(5, MAX_TIME - 1)
             self.attention_weights[:, start:end] = 1.0 / (end - start)
         else:
             self.attention_weights[:, 0] = 1.0
 
-        # Ensure processed_memory has dimension 256 (attention_dim)
         self.processed_memory = self.memory_layer(memory)  # [B, T, 128] → [B, T, 256]
 
     def parse_decoder_inputs(self, decoder_inputs):
@@ -346,17 +335,6 @@ class Decoder(nn.Module):
         coverage = self.cumulative_attention_weights
         coverage = coverage / (coverage.sum(dim=1, keepdim=True) + 1e-8)
         coverage_penalty = torch.clamp(1.0 - coverage, min=0.0)
-        step_coverage_loss = torch.mean(coverage_penalty)
-        # expected_pos = torch.sum(attention_weights * position, dim=1)
-        # ideal_pos = torch.full_like(expected_pos, (step / self.max_decoder_steps) * T_enc)
-        # align_deviation = (expected_pos - ideal_pos) ** 2
-        # right_bias = (ideal_pos > T_enc * 0.9).float()  # не с 0.8
-        # penalty_weight = 0.01 if epoch > 40 else 0.02
-        # alignment_penalty = (align_deviation * (1 + right_bias)).mean() * penalty_weight
-        #
-        # coverage_loss += alignment_penalty
-
-        # self.attention_weights = F.pad(self.attention_weights, (1, 0))[:, :-1]  # сдвиг назад
         self.attention_context = attention_context
 
         decoder_input = torch.cat((self.attention_hidden, self.attention_context), dim=-1)
@@ -397,10 +375,6 @@ class Decoder(nn.Module):
 
         mel_outputs, gate_outputs, alignments = [], [], []
 
-        # tf_ratio = max(
-        #     self.hparams.teacher_forcing_final,
-        #     self.hparams.teacher_forcing_start - epoch / (self.hparams.teacher_forcing_decay_epochs * 2)
-        # )
         tf_ratio = max(self.hparams.teacher_forcing_final,
                        self.hparams.teacher_forcing_start - epoch / self.hparams.teacher_forcing_decay_epochs)
 
@@ -411,7 +385,7 @@ class Decoder(nn.Module):
             if t == 0 or torch.rand(1).item() < tf_step_ratio or mel_output is None:
                 decoder_input = self.prenet(decoder_inputs[t])
             else:
-                decoder_input = self.prenet(mel_output.detach())  # ← предсказание с прошлого шага
+                decoder_input = self.prenet(mel_output.detach())
             emo_t = emotion_embedded[t] if emotion_embedded is not None else torch.zeros(
                 memory.size(0), self.hparams.emotion_embedding_dim).to(memory.device)
 
@@ -455,12 +429,11 @@ class Decoder(nn.Module):
 
         mel_outputs, gate_outputs, alignments = [], [], []
         step = 0
-        min_decoder_steps = 80  # 🔥 Минимальное количество шагов перед остановкой
+        min_decoder_steps = 80
 
         while True:
             decoder_input_prenet = self.prenet(decoder_input)
 
-            # Подаём ту же эмоцию на каждом шаге
             emo_step = emotion_embedding
 
             mel_output, gate_output, alignment, _ = self.decode(
@@ -474,7 +447,7 @@ class Decoder(nn.Module):
             if step > min_decoder_steps and torch.sigmoid(gate_output).item() > self.gate_threshold:
                 break
             if step >= self.max_decoder_steps:
-                print("⚠️ Warning! Reached max decoder steps")
+                print("Warning! Reached max decoder steps")
                 break
 
             decoder_input = mel_output
@@ -496,8 +469,6 @@ class LocationSensitiveAttention(nn.Module):
         self.v = Linear(attention_dim, 1, bias=True)
         self.location_layer = LocationLayer(attention_location_n_filters, attention_location_kernel_size, attention_dim)
 
-        # self.attention_dropout = nn.Dropout(p=0.05)
-
         torch.nn.init.xavier_uniform_(self.query_layer.weight)
         torch.nn.init.xavier_uniform_(self.memory_layer.weight)
         torch.nn.init.xavier_uniform_(self.v.weight)
@@ -513,7 +484,6 @@ class LocationSensitiveAttention(nn.Module):
         processed_attention_weights = self.location_layer(attention_weights_cat)
         energies = self.v(torch.tanh(processed_query + processed_attention_weights + processed_memory)).squeeze(-1)
 
-        # Принудительный диагональный bias до 15 эпохи
         if self.training and step is not None and epoch >= 38 and max_decoder_steps is not None:
             B, T_enc = energies.size()
             ratio = step / max_decoder_steps
@@ -522,10 +492,9 @@ class LocationSensitiveAttention(nn.Module):
             sigma = 3.0
             guide = torch.exp(-(position - center_val) ** 2 / (2 * sigma ** 2))
             guide = guide / (guide.sum() + 1e-8)
-            alpha = 0.15  # Усилить влияние
+            alpha = 0.15
             energies = (1 - alpha) * energies + alpha * guide
 
-        # 2. Дополнительный правый bias после ~70% времени
         if self.training and epoch >= 40 and step is not None and max_decoder_steps is not None:
             ratio = step / max_decoder_steps
             if ratio > 0.6:
@@ -541,18 +510,8 @@ class LocationSensitiveAttention(nn.Module):
                     if all_inf[b]:
                         energies[b, 0] = 0.0
 
-        # scale = 1.5 if epoch < 40 else 2.0
-        # energies = energies * scale
-        # attention_weights = F.softmax(energies, dim=1)
-        # if self.training and epoch >= 30:
-        #     B, T_enc = energies.size()
-        #     shift = torch.linspace(0.0, -0.8, T_enc, device=energies.device)
-        #     energies = energies + shift.unsqueeze(0)
         attention_weights = F.softmax(energies, dim=1)
         attention_weights = torch.nan_to_num(attention_weights, nan=0.0)
-
-        # if self.training and epoch >= 20:
-        #     attention_weights = self.attention_dropout(attention_weights)
 
         attention_weights = attention_weights / (attention_weights.sum(dim=1, keepdim=True) + 1e-8)
 
@@ -628,7 +587,6 @@ class Tacotron2(nn.Module):
             encoder_outputs)
 
         mel_outputs_postnet = self.postnet(mel_outputs)
-        # mel_outputs_postnet = mel_outputs + mel_outputs_postnet
 
         outputs = self.parse_output(
             [mel_outputs, mel_outputs_postnet, gate_outputs, alignments])

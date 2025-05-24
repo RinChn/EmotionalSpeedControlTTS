@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from matplotlib import pyplot as plt
 import matplotlib
+
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 from num2words import num2words
@@ -41,7 +42,6 @@ class SpeakerEncoder(nn.Module):
         self.proj = nn.Linear(hparams.speaker_embedding_dim, hparams.speaker_embedding_dim)
 
     def forward(self, mel_spectrogram):
-        # mel_spectrogram: [B, n_mels, T]
         x = self.conv_layers(mel_spectrogram)
         x = x.permute(2, 0, 1)  # [T, B, C]
         _, (h, _) = self.lstm(x)
@@ -75,7 +75,6 @@ class SpeechMetrics:
         return (score / (batch_size * steps)).item()
 
     def update(self, mel_loss, gate_loss, emotion_loss, alignments=None):
-        # Просто сохраняем значения, они уже должны быть скалярами
         self.mel_losses.append(mel_loss)
         self.gate_losses.append(gate_loss)
         self.emotion_losses.append(emotion_loss)
@@ -88,7 +87,7 @@ class SpeechMetrics:
         def safe_mean(values):
             if not values:
                 return 0.0
-            return float(sum(values) / len(values))  # Простое среднее без numpy
+            return float(sum(values) / len(values))
 
         return {
             'avg_mel_loss': safe_mean(self.mel_losses),
@@ -179,14 +178,13 @@ class EmotionDataset(Dataset):
             if not os.path.exists(full_path):
                 return None
 
-            # Загрузка с ресемплированием до 22.05 кГц
-            audio_data, _ = librosa.load(full_path, sr=22050)  # Принудительное ресемплирование
+            audio_data, _ = librosa.load(full_path, sr=22050)
             audio_data = librosa.util.normalize(audio_data) * 0.9
 
             mel_spectrogram = librosa.feature.melspectrogram(
-                y=audio_data, sr=22050, n_mels=80,  # Используем новую частоту
-                n_fft=1024, hop_length=256, win_length=1024,  # Адаптированные параметры для 22.05 кГц
-                fmin=0, fmax=11025  # Половина от 22050
+                y=audio_data, sr=22050, n_mels=80,
+                n_fft=1024, hop_length=256, win_length=1024,
+                fmin=0, fmax=11025
             )
 
             mel_spectrogram = np.clip(mel_spectrogram, 1e-10, None)
@@ -269,13 +267,12 @@ class Tacotron2(nn.Module):
         )
 
         self.speaker_encoder = SpeakerEncoder(hparams)
-        # Остальные слои остаются без изменений
         self.projection = nn.Sequential(
             nn.Linear(
                 hparams.symbols_embedding_dim +
                 hparams.emotion_embedding_dim +
                 hparams.speaker_embedding_dim,
-                512  # Фиксированный выход в 512 каналов
+                512
             ),
             nn.LayerNorm(512),
             nn.ReLU(),
@@ -286,18 +283,18 @@ class Tacotron2(nn.Module):
         self.decoder = Decoder(hparams)
         for name, param in self.decoder.location_attention.named_parameters():
             if 'weight' in name:
-                nn.init.xavier_uniform_(param, gain=1.0)  # Увеличил gain
+                nn.init.xavier_uniform_(param, gain=1.0)
             if 'bias' in name:
-                nn.init.constant_(param, 0.1)  # Добавил инициализацию bias
+                nn.init.constant_(param, 0.1)
         self.postnet = Postnet(hparams)
 
         self.emotion_classifier = nn.Sequential(
-            nn.Linear(self.hparams.n_mel_channels + 1, 256),  # ✅ ← ПРАВИЛЬНО для _extract_emotion_features
+            nn.Linear(self.hparams.n_mel_channels + 1, 256),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(256, self.hparams.n_emotions)
         )
-        nn.init.xavier_uniform_(self.emotion_classifier[0].weight, gain=0.3)  # Более мягкая инициализация
+        nn.init.xavier_uniform_(self.emotion_classifier[0].weight, gain=0.3)
         nn.init.xavier_uniform_(self.emotion_classifier[3].weight, gain=0.3)
 
     def parse_batch(self, batch):
@@ -310,7 +307,7 @@ class Tacotron2(nn.Module):
 
         text_padded = to_gpu(text_padded).long()
         input_lengths = to_gpu(input_lengths).long()
-        mel_padded = to_gpu(mel_padded).float()  # Уже в правильном формате [B, n_mels, T]
+        mel_padded = to_gpu(mel_padded).float()
         gate_padded = to_gpu(gate_padded).float()
         output_lengths = to_gpu(output_lengths).long()
         emotion_labels = to_gpu(emotion_labels).long()
@@ -323,41 +320,32 @@ class Tacotron2(nn.Module):
     def forward(self, inputs, epoch: int = 0):
         text_inputs, input_lengths, mels, output_lengths, emotion_labels = inputs
 
-        # Получаем эмбеддинги
         embedded_text = self.embedding(text_inputs)  # [B, T, 256]
         emotion_embedded = self.emotion_embedding(emotion_labels)  # [B, 64]
         speaker_embedded = self.speaker_encoder(mels)  # [B, 128]
 
-        # Совмещаем размерности
         emotion_embedded = emotion_embedded.unsqueeze(1).expand(-1, embedded_text.size(1), -1)
         speaker_embedded = speaker_embedded.unsqueeze(1).expand(-1, embedded_text.size(1), -1)
 
-        # Объединяем [B, T, 448]
         combined = torch.cat([embedded_text, emotion_embedded, speaker_embedded], dim=-1)
 
-        # Проекция в 512 каналов
         projected = self.projection(combined)  # [B, T, 512]
         encoder_input = projected.transpose(1, 2)  # [B, 512, T]
 
-        # Получаем выходы энкодера
         encoder_outputs = self.encoder(encoder_input, input_lengths)
 
-        # Подготовка входных данных для декодера
-        # Транспонируем mels в [B, n_mels, T] если нужно
         if mels.size(1) != self.hparams.n_mel_channels:
             mels = mels.transpose(1, 2)
 
-        # Вызов декодера
         mel_outputs, gate_outputs, alignments, coverage_loss = self.decoder(
             encoder_outputs, mels, memory_lengths=input_lengths,
             emotion_embedded=emotion_embedded,
             epoch=epoch
         )
 
-        # Постобработка
-        mel_outputs_postnet = self.postnet(mel_outputs.permute(0, 2, 1))  # ✅ из [B, T, 80] в [B, 80, T]
+        mel_outputs_postnet = self.postnet(mel_outputs.permute(0, 2, 1))
 
-        mel_outputs_postnet = mel_outputs_postnet.transpose(1, 2) + mel_outputs  # обратно [B, T, 80]
+        mel_outputs_postnet = mel_outputs_postnet.transpose(1, 2) + mel_outputs
 
         emotion_features = self._extract_emotion_features(mel_outputs_postnet, alignments)
         emotion_pred = self.emotion_classifier(emotion_features)
@@ -368,7 +356,7 @@ class Tacotron2(nn.Module):
             'gate_outputs': gate_outputs,
             'alignments': alignments,
             'emotion_pred': emotion_pred,
-            'coverage_loss': coverage_loss  # 👈 добавляем
+            'coverage_loss': coverage_loss
         }
 
     def parse_output(self, outputs, output_lengths=None):
@@ -393,7 +381,6 @@ class Tacotron2(nn.Module):
             encoder_outputs, emotion_embedding=emotion_embedding
         )
 
-        # 🎯 Добавляем Postnet:
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet
 
@@ -457,13 +444,6 @@ class Tacotron2(nn.Module):
         mel_outputs_postnet = mel_outputs_postnet.to(device)
         mel_outputs_postnet = mel_outputs_postnet.squeeze(0).cpu().detach().numpy()
 
-        # # 10. Усиливаем мел, чтобы он был ярче
-        # mel_outputs_postnet = mel_outputs_postnet + 2.0
-        # mel_outputs_postnet = torch.clamp(mel_outputs_postnet, min=-11.5, max=2.0)
-
-        # 11. В numpy
-        # mel_outputs_postnet = mel_outputs_postnet.squeeze(0).cpu().detach().numpy()
-
         return {
             "mel": mel_outputs_postnet,
             "alignments": alignments,
@@ -473,13 +453,9 @@ class Tacotron2(nn.Module):
     def get_emotion_embedding(self, emotion_ids):
         return self.emotion_embedding(emotion_ids)
 
-
     def mel_to_audio(self, mel, n_iter=100):
         """Преобразование MEL-спектрограммы в аудиосигнал"""
         hparams = self.hparams
-
-        # Денормализация MEL
-        # mel = (mel * hparams.mel_std) + hparams.mel_mean
 
         # Преобразование в линейную спектрограмму
         mel_basis = librosa.filters.mel(
@@ -504,6 +480,7 @@ class Tacotron2(nn.Module):
         # Нормализация и обрезка тишины
         waveform = librosa.effects.trim(waveform, top_db=25)[0]
         return librosa.util.normalize(waveform) * 0.9
+
     def mel_to_audio_enhanced(self, mel, n_iter=200):
         # Жесткая нормализация MEL
         mel = np.clip(mel, -20, 20) + 40  # Смещение +40dB
@@ -576,7 +553,7 @@ def guided_attention_loss(attn, input_lengths, output_lengths, epoch, g=0.4):
 
     loss = torch.mean(attn * guided_mask) * 2.0
     if epoch > 35:
-        return loss * 2.0  # вместо 0.0
+        return loss * 2.0
     return loss * 8.0
 
 
@@ -623,7 +600,7 @@ def train():
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=2e-4,  # стартовый lr можно немного снизить
+        lr=2e-4,
         weight_decay=1e-6,
         betas=(0.9, 0.98),
         eps=1e-9
@@ -632,10 +609,10 @@ def train():
     total_training_steps = num_epochs * len(train_loader)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
-        max_lr=1e-6,  # Плавный рост и спад
+        max_lr=1e-6,
         total_steps=total_training_steps,
-        pct_start=0.3,  # Первые 10% - warmup
-        anneal_strategy='cos',  # Косинусный спад
+        pct_start=0.3,
+        anneal_strategy='cos',
         cycle_momentum=False,
         div_factor=1.0,
         final_div_factor=1.0
@@ -671,7 +648,6 @@ def train():
         device = alignments.device
 
         # Guided attention loss+
-
         pos_dec = torch.arange(T_dec, device=device).float().unsqueeze(1) / (T_dec - 1)
         pos_enc = torch.arange(T_enc, device=device).float().unsqueeze(0) / (T_enc - 1)
         guided_mask = 1.0 - torch.exp(-((pos_dec - pos_enc) ** 2) / (2 * 0.4 ** 2))
@@ -697,12 +673,6 @@ def train():
         diagonal_mask = diagonal_mask / (diagonal_mask.sum(dim=2, keepdim=True) + 1e-8)
         alignments = alignments / (alignments.sum(dim=2, keepdim=True) + 1e-8)
         diagonal_loss = F.mse_loss(alignments, diagonal_mask) * 0.5
-        # if epoch < 30:
-        #     diagonal_weight = 1.0
-        # elif epoch < 38:
-        #     diagonal_weight = 0.5
-        # else:
-        #     diagonal_weight = 0.0
         diagonal_weight = 0.0
         total_loss += diagonal_loss * diagonal_weight
 
@@ -710,7 +680,6 @@ def train():
         align_safe = torch.clamp(alignments, min=1e-8)
         sharpness = torch.sum((align_safe - align_safe.max(dim=2, keepdim=True)[0]) ** 2, dim=2)
         sharpness_loss = torch.mean(sharpness)
-        # sharpness_weight = 0.2 if epoch < 30 else 0.05 if epoch < 35 else 0.0
         sharpness_weight = 0.0
         total_loss += sharpness_weight * sharpness_loss
 
@@ -721,7 +690,7 @@ def train():
             penalty_weight = 0.15 if epoch < 55 else 0.25
             total_loss += torch.mean(end_penalty) * penalty_weight
 
-        # Coverage penalty (оставляем, если он в модельных выходах)
+        # Coverage penalty
         coverage_loss = outputs.get("coverage_loss", 0.0)
         if epoch < 35 and isinstance(coverage_loss, torch.Tensor):
             total_loss += coverage_loss * hparams.coverage_weight
@@ -748,10 +717,6 @@ def train():
     for epoch in range(start_epoch, num_epochs):
         model.train()
         train_metrics.reset()
-        # if epoch >= 30:
-        #     for param in model.decoder.location_attention.parameters():
-        #         param.requires_grad = False
-        #     print("📛 Attention weights frozen!")
 
         max_mel_len = min(900, 200 + epoch * 50)
         train_loader.dataset.data = train_dataset.original_data[
@@ -785,7 +750,7 @@ def train():
 
             if epoch >= 15:
                 for param_group in optimizer.param_groups:
-                    param_group['lr'] = 2e-05  # стабильный, низкий LR
+                    param_group['lr'] = 2e-05
 
             scheduler.step()
 
@@ -806,7 +771,6 @@ def train():
                 'align': f"{train_metrics.get_metrics()['avg_alignment_score']:.2f}"
             })
 
-        # 🖼 Сохраняем визуализацию attention после каждой эпохи
         align = outputs['alignments'][0].detach().cpu().numpy()
         plt.figure(figsize=(10, 5))
         plt.imshow(align, aspect='auto', origin='lower')
@@ -814,7 +778,6 @@ def train():
         plt.savefig(f'model_and_alignment/alignment_epoch_{epoch + 1}.png')
         plt.close()
 
-        # --- Валидация без изменений ---
         model.eval()
         test_metrics.reset()
         current_test_loss = 0.0
@@ -837,7 +800,7 @@ def train():
         avg_test_loss = current_test_loss / len(test_loader)
         align_score = test_metrics.get_metrics()['avg_alignment_score']
         if epoch < 10:
-            pass  # не делай scheduler.step()
+            pass
         else:
             scheduler.step()
 
